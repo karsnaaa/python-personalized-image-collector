@@ -7,618 +7,486 @@ import threading
 from urllib.parse import urljoin, urlparse
 from bs4 import BeautifulSoup
 import json
+from typing import List, Dict, Optional
 import hashlib
-from PIL import Image, ImageTk, ImageOps, ImageFilter
+from PIL import Image, ImageTk
 import io
 import cv2
 import numpy as np
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 import face_recognition
-from sklearn.metrics.pairwise import cosine_similarity
-import dlib
-from imutils import face_utils
-import math
-import pytesseract
-from datetime import datetime
-import exifread
-import tensorflow as tf
-from tensorflow.keras.applications import VGG16
-from tensorflow.keras.models import Model
-from sklearn.cluster import DBSCAN
-import warnings
-warnings.filterwarnings('ignore')
 
-class UltraPreciseProfileScraper:
+class ProfileImageScraperGUI:
     def __init__(self, root):
         self.root = root
-        self.root.title("Ultra-Precise AI Profile Image Scraper")
-        self.root.geometry("1200x950")
+        self.root.title("AI Profile Image Scraper with Face Recognition")
+        self.root.geometry("1000x800")
         self.root.configure(bg='#f0f0f0')
-        
-        # Initialize multiple face detection models
-        self.face_detectors = {
-            'dlib': dlib.get_frontal_face_detector(),
-            'haar': cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'),
-            'mtcnn': None  # Will be loaded on demand
-        }
-        
-        # Initialize face recognition models
-        self.shape_predictor = dlib.shape_predictor("shape_predictor_68_face_landmarks.dat")
-        self.face_recognizer = dlib.face_recognition_model_v1("dlib_face_recognition_resnet_model_v1.dat")
-        
-        # Initialize image quality assessment model
-        self.quality_model = self.load_quality_assessment_model()
         
         # Initialize scraper session
         self.session = requests.Session()
         self.session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-            'Accept-Language': 'en-US,en;q=0.9',
-            'Accept-Encoding': 'gzip, deflate, br',
-            'Referer': 'https://www.google.com/'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
         })
         
-        # Configuration
         self.download_folder = "profile_images"
         self.is_scraping = False
         self.face_detection_enabled = True
-        self.face_matching_enabled = True
-        self.metadata_analysis_enabled = True
-        self.quality_check_enabled = True
-        self.min_face_size = 120  # Minimum face size in pixels
-        self.similarity_threshold = 0.75  # Cosine similarity threshold for face matching
-        self.min_quality_score = 0.7  # Minimum quality assessment score (0-1)
-        self.max_aspect_ratio = 2.0  # Max width/height ratio for valid faces
-        self.min_eye_distance = 30  # Minimum distance between eyes in pixels
         self.reference_faces = []
         
-        # Create UI
         self.create_widgets()
-        self.setup_advanced_settings()
-        
-        # Performance metrics
-        self.total_images_processed = 0
-        self.valid_faces_found = 0
-        self.matching_faces_found = 0
-    
-    def load_quality_assessment_model(self):
-        """Load pre-trained image quality assessment model"""
-        base_model = VGG16(weights='imagenet', include_top=False, input_shape=(224, 224, 3))
-        x = base_model.output
-        x = tf.keras.layers.GlobalAveragePooling2D()(x)
-        predictions = tf.keras.layers.Dense(1, activation='sigmoid')(x)
-        model = Model(inputs=base_model.input, outputs=predictions)
-        
-        # Load custom weights (would need to train this model separately)
-        # model.load_weights('quality_model_weights.h5')
-        
-        return model
     
     def create_widgets(self):
-        """Create the main UI components"""
-        # Main container
-        main_container = ttk.Frame(self.root)
-        main_container.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        # Title
+        title_label = tk.Label(self.root, text="AI Profile Image Scraper with Face Recognition", 
+                              font=('Arial', 16, 'bold'), bg='#f0f0f0', fg='#333')
+        title_label.pack(pady=10)
         
-        # Left panel (controls)
-        left_panel = ttk.Frame(main_container, width=450)
-        left_panel.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 10))
+        # Main frame
+        main_frame = ttk.Frame(self.root, padding="20")
+        main_frame.pack(fill=tk.BOTH, expand=True)
         
-        # Right panel (preview and log)
-        right_panel = ttk.Frame(main_container)
-        right_panel.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
+        # Person name input
+        name_frame = ttk.Frame(main_frame)
+        name_frame.pack(fill=tk.X, pady=(0, 15))
         
-        # ========== LEFT PANEL CONTROLS ==========
+        ttk.Label(name_frame, text="Person Name:", font=('Arial', 12, 'bold')).pack(anchor=tk.W)
+        self.name_entry = ttk.Entry(name_frame, font=('Arial', 11), width=50)
+        self.name_entry.pack(fill=tk.X, pady=(5, 0))
         
-        # Search section
-        search_frame = ttk.LabelFrame(left_panel, text="Search Parameters", padding=10)
-        search_frame.pack(fill=tk.X, pady=(0, 10))
+        # Reference image frame
+        ref_frame = ttk.LabelFrame(main_frame, text="Reference Images (For Face Matching)", padding="10")
+        ref_frame.pack(fill=tk.X, pady=(0, 15))
         
-        # Person name
-        ttk.Label(search_frame, text="Person Name:").pack(anchor=tk.W)
-        self.name_entry = ttk.Entry(search_frame, font=('Arial', 11))
-        self.name_entry.pack(fill=tk.X, pady=(0, 10))
+        ref_buttons_frame = ttk.Frame(ref_frame)
+        ref_buttons_frame.pack(fill=tk.X)
         
-        # Platforms
-        platforms_frame = ttk.Frame(search_frame)
-        platforms_frame.pack(fill=tk.X, pady=(0, 10))
+        ttk.Button(ref_buttons_frame, text="Add Reference Image", command=self.add_reference_image).pack(side=tk.LEFT, padx=(0, 10))
+        ttk.Button(ref_buttons_frame, text="Clear References", command=self.clear_reference_images).pack(side=tk.LEFT)
         
-        ttk.Label(platforms_frame, text="Platform Usernames:").pack(anchor=tk.W)
+        self.ref_images_frame = ttk.Frame(ref_frame)
+        self.ref_imagesFrame.pack(fill=tk.X)
+        
+        # Platforms frame
+        platforms_frame = ttk.LabelFrame(main_frame, text="Platform Usernames (Optional)", padding="10")
+        platforms_frame.pack(fill=tk.X, pady=(0, 15))
         
         # Twitter
         twitter_frame = ttk.Frame(platforms_frame)
         twitter_frame.pack(fill=tk.X, pady=2)
-        ttk.Label(twitter_frame, text="Twitter/X:", width=10).pack(side=tk.LEFT)
-        self.twitter_entry = ttk.Entry(twitter_frame)
-        self.twitter_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
+        ttk.Label(twitter_frame, text="Twitter/X:", width=12).pack(side=tk.LEFT)
+        self.twitter_entry = ttk.Entry(twitter_frame, width=30)
+        self.twitter_entry.pack(side=tk.LEFT, padx=(5, 0))
         
         # GitHub
         github_frame = ttk.Frame(platforms_frame)
         github_frame.pack(fill=tk.X, pady=2)
-        ttk.Label(github_frame, text="GitHub:", width=10).pack(side=tk.LEFT)
-        self.github_entry = ttk.Entry(github_frame)
-        self.github_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
+        ttk.Label(github_frame, text="GitHub:", width=12).pack(side=tk.LEFT)
+        self.github_entry = ttk.Entry(github_frame, width=30)
+        self.github_entry.pack(side=tk.LEFT, padx=(5, 0))
         
         # LinkedIn
         linkedin_frame = ttk.Frame(platforms_frame)
         linkedin_frame.pack(fill=tk.X, pady=2)
-        ttk.Label(linkedin_frame, text="LinkedIn:", width=10).pack(side=tk.LEFT)
-        self.linkedin_entry = ttk.Entry(linkedin_frame)
-        self.linkedin_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
+        ttk.Label(linkedin_frame, text="LinkedIn URL:", width=12).pack(side=tk.LEFT)
+        self.linkedin_entry = ttk.Entry(linkedin_frame, width=40)
+        self.linkedin_entry.pack(side=tk.LEFT, padx=(5, 0))
         
-        # Reference images
-        ref_frame = ttk.LabelFrame(left_panel, text="Reference Images", padding=10)
-        ref_frame.pack(fill=tk.X, pady=(0, 10))
+        # Settings frame
+        settings_frame = ttk.LabelFrame(main_frame, text="Settings", padding="10")
+        settings_frame.pack(fill=tk.X, pady=(0, 15))
         
-        self.ref_images_container = ttk.Frame(ref_frame)
-        self.ref_images_container.pack(fill=tk.X)
+        # Face detection toggle
+        face_detect_frame = ttk.Frame(settings_frame)
+        face_detect_frame.pack(fill=tk.X, pady=2)
+        ttk.Label(face_detect_frame, text="Face Detection:", width=15).pack(side=tk.LEFT)
+        self.face_detect_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(face_detect_frame, variable=self.face_detect_var, 
+                        command=self.toggle_face_detection).pack(side=tk.LEFT)
         
-        ref_buttons_frame = ttk.Frame(ref_frame)
-        ref_buttons_frame.pack(fill=tk.X, pady=(5, 0))
-        
-        ttk.Button(ref_buttons_frame, text="Add Reference", command=self.add_reference_image).pack(side=tk.LEFT, padx=(0, 5))
-        ttk.Button(ref_buttons_frame, text="Clear All", command=self.clear_reference_images).pack(side=tk.LEFT)
-        
-        # Settings
-        settings_frame = ttk.LabelFrame(left_panel, text="Settings", padding=10)
-        settings_frame.pack(fill=tk.X, pady=(0, 10))
-        
-        # Download folder
+        # Folder selection
         folder_frame = ttk.Frame(settings_frame)
         folder_frame.pack(fill=tk.X, pady=2)
         ttk.Label(folder_frame, text="Download Folder:", width=15).pack(side=tk.LEFT)
         self.folder_var = tk.StringVar(value=self.download_folder)
-        self.folder_entry = ttk.Entry(folder_frame, textvariable=self.folder_var)
-        self.folder_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
-        ttk.Button(folder_frame, text="Browse", command=self.browse_folder, width=8).pack(side=tk.LEFT)
+        self.folder_entry = ttk.Entry(folder_frame, textvariable=self.folder_var, width=35)
+        self.folder_entry.pack(side=tk.LEFT, padx=(5, 5))
+        ttk.Button(folder_frame, text="Browse", command=self.browse_folder).pack(side=tk.LEFT)
         
-        # Max images
+        # Max images setting
         max_frame = ttk.Frame(settings_frame)
         max_frame.pack(fill=tk.X, pady=2)
         ttk.Label(max_frame, text="Max Images:", width=15).pack(side=tk.LEFT)
-        self.max_images_var = tk.StringVar(value="20")
-        ttk.Entry(max_frame, textvariable=self.max_images_var, width=10).pack(side=tk.LEFT, padx=5)
+        self.max_images_var = tk.StringVar(value="10")
+        ttk.Entry(max_frame, textvariable=self.max_images_var, width=10).pack(side=tk.LEFT, padx=(5, 0))
         
-        # Action buttons
-        buttons_frame = ttk.Frame(left_panel)
-        buttons_frame.pack(fill=tk.X, pady=(10, 0))
+        # Buttons frame
+        buttons_frame = ttk.Frame(main_frame)
+        buttons_frame.pack(fill=tk.X, pady=(0, 15))
         
-        self.start_button = ttk.Button(buttons_frame, text="Start Scraping", command=self.start_scraping, style='Accent.TButton')
-        self.start_button.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
+        self.start_button = ttk.Button(buttons_frame, text="Start Scraping", 
+                                     command=self.start_scraping, style='Accent.TButton')
+        self.start_button.pack(side=tk.LEFT, padx=(0, 10))
         
-        self.stop_button = ttk.Button(buttons_frame, text="Stop", command=self.stop_scraping, state=tk.DISABLED)
-        self.stop_button.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
+        self.stop_button = ttk.Button(buttons_frame, text="Stop", 
+                                    command=self.stop_scraping, state=tk.DISABLED)
+        self.stop_button.pack(side=tk.LEFT, padx=(0, 10))
         
-        ttk.Button(buttons_frame, text="Advanced", command=self.show_advanced_settings).pack(side=tk.LEFT, fill=tk.X, expand=True)
-        
-        # ========== RIGHT PANEL CONTROLS ==========
-        
-        # Preview frame
-        preview_frame = ttk.LabelFrame(right_panel, text="Image Preview & Analysis", padding=10)
-        preview_frame.pack(fill=tk.BOTH, expand=True)
-        
-        # Preview image with face annotations
-        self.preview_canvas = tk.Canvas(preview_frame, bg='white')
-        self.preview_canvas.pack(fill=tk.BOTH, expand=True)
-        
-        # Analysis info
-        analysis_frame = ttk.Frame(preview_frame)
-        analysis_frame.pack(fill=tk.X, pady=(5, 0))
-        
-        self.analysis_var = tk.StringVar(value="Analysis results will appear here")
-        ttk.Label(analysis_frame, textvariable=self.analysis_var, wraplength=600).pack(anchor=tk.W)
-        
-        # Log frame
-        log_frame = ttk.LabelFrame(right_panel, text="Activity Log", padding=10)
-        log_frame.pack(fill=tk.BOTH, expand=True)
-        
-        self.log_text = scrolledtext.ScrolledText(log_frame, height=12, font=('Consolas', 9))
-        self.log_text.pack(fill=tk.BOTH, expand=True)
+        ttk.Button(buttons_frame, text="Clear Log", command=self.clear_log).pack(side=tk.LEFT, padx=(0, 10))
+        ttk.Button(buttons_frame, text="Open Folder", command=self.open_download_folder).pack(side=tk.LEFT)
         
         # Progress bar
-        self.progress = ttk.Progressbar(right_panel, mode='determinate')
-        self.progress.pack(fill=tk.X, pady=(5, 0))
+        self.progress = ttk.Progressbar(main_frame, mode='indeterminate')
+        self.progress.pack(fill=tk.X, pady=(0, 10))
+        
+        # Log area
+        log_frame = ttk.LabelFrame(main_frame, text="Log", padding="5")
+        log_frame.pack(fill=tk.BOTH, expand=True)
+        
+        self.log_text = scrolledtext.ScrolledText(log_frame, height=15, font=('Consolas', 9))
+        self.log_text.pack(fill=tk.BOTH, expand=True)
         
         # Status bar
         self.status_var = tk.StringVar(value="Ready")
         status_bar = ttk.Label(self.root, textvariable=self.status_var, relief=tk.SUNKEN, anchor=tk.W)
         status_bar.pack(side=tk.BOTTOM, fill=tk.X)
     
-    def setup_advanced_settings(self):
-        """Create advanced settings window"""
-        self.advanced_window = None
-    
-    def show_advanced_settings(self):
-        """Show advanced settings window"""
-        if self.advanced_window and self.advanced_window.winfo_exists():
-            self.advanced_window.lift()
-            return
-            
-        self.advanced_window = tk.Toplevel(self.root)
-        self.advanced_window.title("Advanced Settings")
-        self.advanced_window.geometry("600x500")
-        self.advanced_window.resizable(False, False)
-        
-        # Face detection settings
-        face_settings = ttk.LabelFrame(self.advanced_window, text="Face Detection Settings", padding=10)
-        face_settings.pack(fill=tk.X, padx=10, pady=(10, 5))
-        
-        # Detection method
-        method_frame = ttk.Frame(face_settings)
-        method_frame.pack(fill=tk.X, pady=2)
-        ttk.Label(method_frame, text="Detection Method:").pack(side=tk.LEFT)
-        self.detection_method_var = tk.StringVar(value="ensemble")
-        methods = [("Ensemble (recommended)", "ensemble"),
-                  ("Dlib CNN", "dlib"),
-                  ("Haar Cascade", "haar"),
-                  ("MTCNN", "mtcnn")]
-        for text, mode in methods:
-            ttk.Radiobutton(method_frame, text=text, variable=self.detection_method_var, 
-                           value=mode).pack(side=tk.LEFT, padx=5)
-        
-        # Min face size
-        min_face_frame = ttk.Frame(face_settings)
-        min_face_frame.pack(fill=tk.X, pady=2)
-        ttk.Label(min_face_frame, text="Minimum Face Size (px):").pack(side=tk.LEFT)
-        self.min_face_var = tk.IntVar(value=self.min_face_size)
-        ttk.Scale(min_face_frame, from_=50, to=200, variable=self.min_face_var, 
-                 command=lambda v: self.min_face_size_label.config(text=f"{int(float(v))}px")).pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
-        self.min_face_size_label = ttk.Label(min_face_frame, text=f"{self.min_face_size}px", width=5)
-        self.min_face_size_label.pack(side=tk.LEFT)
-        
-        # Min eye distance
-        eye_dist_frame = ttk.Frame(face_settings)
-        eye_dist_frame.pack(fill=tk.X, pady=2)
-        ttk.Label(eye_dist_frame, text="Min Eye Distance (px):").pack(side=tk.LEFT)
-        self.min_eye_var = tk.IntVar(value=self.min_eye_distance)
-        ttk.Scale(eye_dist_frame, from_=10, to=100, variable=self.min_eye_var, 
-                 command=lambda v: self.min_eye_label.config(text=f"{int(float(v))}px")).pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
-        self.min_eye_label = ttk.Label(eye_dist_frame, text=f"{self.min_eye_distance}px", width=5)
-        self.min_eye_label.pack(side=tk.LEFT)
-        
-        # Max aspect ratio
-        aspect_frame = ttk.Frame(face_settings)
-        aspect_frame.pack(fill=tk.X, pady=2)
-        ttk.Label(aspect_frame, text="Max Aspect Ratio:").pack(side=tk.LEFT)
-        self.aspect_var = tk.DoubleVar(value=self.max_aspect_ratio)
-        ttk.Scale(aspect_frame, from_=1.0, to=3.0, variable=self.aspect_var, 
-                 command=lambda v: self.aspect_label.config(text=f"{float(v):.1f}")).pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
-        self.aspect_label = ttk.Label(aspect_frame, text=f"{self.max_aspect_ratio:.1f}", width=5)
-        self.aspect_label.pack(side=tk.LEFT)
-        
-        # Face matching settings
-        match_settings = ttk.LabelFrame(self.advanced_window, text="Face Matching Settings", padding=10)
-        match_settings.pack(fill=tk.X, padx=10, pady=5)
-        
-        # Similarity threshold
-        similarity_frame = ttk.Frame(match_settings)
-        similarity_frame.pack(fill=tk.X, pady=2)
-        ttk.Label(similarity_frame, text="Similarity Threshold:").pack(side=tk.LEFT)
-        self.similarity_var = tk.DoubleVar(value=self.similarity_threshold)
-        ttk.Scale(similarity_frame, from_=0.5, to=0.95, variable=self.similarity_var, 
-                 command=lambda v: self.similarity_label.config(text=f"{float(v):.2f}")).pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
-        self.similarity_label = ttk.Label(similarity_frame, text=f"{self.similarity_threshold:.2f}", width=5)
-        self.similarity_label.pack(side=tk.LEFT)
-        
-        # Image quality settings
-        quality_settings = ttk.LabelFrame(self.advanced_window, text="Image Quality Settings", padding=10)
-        quality_settings.pack(fill=tk.X, padx=10, pady=5)
-        
-        # Min quality score
-        quality_frame = ttk.Frame(quality_settings)
-        quality_frame.pack(fill=tk.X, pady=2)
-        ttk.Label(quality_frame, text="Min Quality Score:").pack(side=tk.LEFT)
-        self.quality_var = tk.DoubleVar(value=self.min_quality_score)
-        ttk.Scale(quality_frame, from_=0.1, to=0.9, variable=self.quality_var, 
-                 command=lambda v: self.quality_label.config(text=f"{float(v):.2f}")).pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
-        self.quality_label = ttk.Label(quality_frame, text=f"{self.min_quality_score:.2f}", width=5)
-        self.quality_label.pack(side=tk.LEFT)
-        
-        # Save button
-        save_frame = ttk.Frame(self.advanced_window)
-        save_frame.pack(fill=tk.X, padx=10, pady=10)
-        ttk.Button(save_frame, text="Save Settings", command=self.save_advanced_settings).pack(side=tk.RIGHT)
-    
-    def save_advanced_settings(self):
-        """Save advanced settings"""
-        self.min_face_size = self.min_face_var.get()
-        self.similarity_threshold = self.similarity_var.get()
-        self.min_quality_score = self.quality_var.get()
-        self.min_eye_distance = self.min_eye_var.get()
-        self.max_aspect_ratio = self.aspect_var.get()
-        self.detection_method = self.detection_method_var.get()
-        
-        self.log_message(f"Advanced settings saved:")
-        self.log_message(f"- Min face size: {self.min_face_size}px")
-        self.log_message(f"- Min eye distance: {self.min_eye_distance}px")
-        self.log_message(f"- Max aspect ratio: {self.max_aspect_ratio:.1f}")
-        self.log_message(f"- Similarity threshold: {self.similarity_threshold:.2f}")
-        self.log_message(f"- Min quality score: {self.min_quality_score:.2f}")
-        self.log_message(f"- Detection method: {self.detection_method}")
-        
-        self.advanced_window.destroy()
-        self.advanced_window = None
-    
     def add_reference_image(self):
-        """Add reference image with enhanced processing"""
+        """Add reference image for face matching"""
         file_path = filedialog.askopenfilename(
             title="Select Reference Image",
-            filetypes=[("Image files", "*.jpg *.jpeg *.png *.webp")]
+            filetypes=[("Image files", "*.jpg *.jpeg *.png")]
         )
         
         if file_path:
             try:
-                # Load image
-                image = cv2.imread(file_path)
-                if image is None:
-                    raise ValueError("Could not read image file")
+                # Load the image and encode the face
+                image = face_recognition.load_image_file(file_path)
+                encodings = face_recognition.face_encodings(image)
                 
-                # Convert to RGB
-                rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-                
-                # Detect faces using ensemble method
-                faces = self.detect_faces_ensemble(rgb_image)
-                if len(faces) == 0:
-                    raise ValueError("No faces found in the image")
-                
-                # Get the best quality face
-                best_face = self.select_best_face(rgb_image, faces)
-                
-                # Predict landmarks
-                shape = self.shape_predictor(rgb_image, best_face)
-                
-                # Compute face descriptor
-                face_descriptor = self.face_recognizer.compute_face_descriptor(rgb_image, shape)
-                face_encoding = np.array(face_descriptor)
-                
-                # Calculate quality metrics
-                landmarks = face_utils.shape_to_np(shape)
-                left_eye = landmarks[36:42]
-                right_eye = landmarks[42:48]
-                eye_distance = np.linalg.norm(np.mean(left_eye, axis=0) - np.mean(right_eye, axis=0))
-                
-                # Store the reference face
-                self.reference_faces.append({
-                    'encoding': face_encoding,
-                    'image': image,
-                    'path': file_path,
-                    'landmarks': shape,
-                    'eye_distance': eye_distance,
-                    'face_rect': best_face
-                })
-                
-                # Display thumbnail with annotations
-                self.display_reference_thumbnail(file_path, len(self.reference_faces), best_face, shape)
-                
-                self.log_message(f"Added reference image: {os.path.basename(file_path)}")
-                self.log_message(f"Face detected with eye distance: {eye_distance:.1f}px")
-                
+                if encodings:
+                    self.reference_faces.append(encodings[0])
+                    
+                    # Display thumbnail in the reference frame
+                    img = Image.open(file_path)
+                    img.thumbnail((100, 100))
+                    photo = ImageTk.PhotoImage(img)
+                    
+                    label = tk.Label(self.ref_images_frame, image=photo)
+                    label.image = photo  # Keep a reference
+                    label.pack(side=tk.LEFT, padx=5)
+                    
+                    self.log_message(f"Added reference image: {os.path.basename(file_path)}")
+                else:
+                    messagebox.showerror("Error", "No faces found in the selected image")
             except Exception as e:
-                messagebox.showerror("Error", f"Failed to process reference image: {str(e)}")
+                messagebox.showerror("Error", f"Failed to load image: {str(e)}")
     
-    def detect_faces_ensemble(self, image):
-        """Detect faces using multiple methods for better accuracy"""
-        # Convert to grayscale for Haar cascade
-        gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
-        
-        # Detect with each method
-        detections = []
-        
-        # 1. Dlib CNN (most accurate but slower)
-        dlib_faces = self.face_detectors['dlib'](image, 1)
-        for face in dlib_faces:
-            detections.append({
-                'method': 'dlib',
-                'rect': face,
-                'confidence': 1.0  # Dlib doesn't provide confidence scores
-            })
-        
-        # 2. Haar Cascade (faster but less accurate)
-        haar_faces = self.face_detectors['haar'].detectMultiScale(
-            gray,
-            scaleFactor=1.1,
-            minNeighbors=5,
-            minSize=(self.min_face_size, self.min_face_size),
-            flags=cv2.CASCADE_SCALE_IMAGE
-        )
-        for (x, y, w, h) in haar_faces:
-            detections.append({
-                'method': 'haar',
-                'rect': dlib.rectangle(x, y, x+w, y+h),
-                'confidence': 1.0  # Haar doesn't provide confidence
-            })
-        
-        # 3. MTCNN (on-demand loading)
-        if self.detection_method == 'mtcnn' or self.detection_method == 'ensemble':
-            if self.face_detectors['mtcnn'] is None:
-                from mtcnn import MTCNN
-                self.face_detectors['mtcnn'] = MTCNN()
-            
-            mtcnn_results = self.face_detectors['mtcnn'].detect_faces(image)
-            for result in mtcnn_results:
-                if result['confidence'] > 0.9:  # Only high-confidence detections
-                    x, y, w, h = result['box']
-                    detections.append({
-                        'method': 'mtcnn',
-                        'rect': dlib.rectangle(x, y, x+w, y+h),
-                        'confidence': result['confidence']
-                    })
-        
-        # Cluster overlapping detections
-        if len(detections) > 1:
-            boxes = np.array([[
-                det['rect'].left(), det['rect'].top(),
-                det['rect'].right(), det['rect'].bottom()
-            ] for det in detections])
-            
-            # Use DBSCAN to cluster overlapping boxes
-            clustering = DBSCAN(eps=50, min_samples=1).fit(boxes)
-            labels = clustering.labels_
-            
-            # For each cluster, keep the best detection
-            unique_labels = set(labels)
-            final_detections = []
-            
-            for label in unique_labels:
-                cluster_detections = [detections[i] for i in range(len(detections)) if labels[i] == label]
-                
-                # Prefer MTCNN if available, then Dlib, then Haar
-                method_priority = {'mtcnn': 3, 'dlib': 2, 'haar': 1}
-                best_detection = max(cluster_detections, key=lambda x: (
-                    method_priority.get(x['method'], 0),
-                    x.get('confidence', 0)
-                ))
-                
-                final_detections.append(best_detection)
-            
-            detections = final_detections
-        
-        return [det['rect'] for det in detections]
+    def clear_reference_images(self):
+        """Clear all reference images"""
+        self.reference_faces = []
+        for widget in self.ref_images_frame.winfo_children():
+            widget.destroy()
+        self.log_message("Cleared all reference images")
     
-    def select_best_face(self, image, faces):
-        """Select the best face from multiple detections"""
-        if len(faces) == 1:
-            return faces[0]
-        
-        # Score each face based on size, position, and aspect ratio
-        img_height, img_width = image.shape[:2]
-        center_x, center_y = img_width // 2, img_height // 2
-        
-        best_score = -1
-        best_face = None
-        
-        for face in faces:
-            # Calculate face metrics
-            width = face.width()
-            height = face.height()
-            aspect_ratio = width / height
-            area = width * height
-            
-            # Calculate distance from image center
-            face_center_x = (face.left() + face.right()) // 2
-            face_center_y = (face.top() + face.bottom()) // 2
-            dist_from_center = math.sqrt(
-                (face_center_x - center_x)**2 + 
-                (face_center_y - center_y)**2
-            )
-            
-            # Normalize distance (0-1 where 0 is center)
-            max_dist = math.sqrt(center_x**2 + center_y**2)
-            norm_dist = dist_from_center / max_dist if max_dist > 0 else 0
-            
-            # Calculate score (higher is better)
-            size_score = min(1.0, area / (self.min_face_size ** 2))  # Reward larger faces
-            aspect_score = 1.0 - min(1.0, abs(aspect_ratio - 1.0))  # Reward square-ish faces
-            center_score = 1.0 - norm_dist  # Reward centered faces
-            
-            total_score = 0.5 * size_score + 0.3 * aspect_score + 0.2 * center_score
-            
-            if total_score > best_score:
-                best_score = total_score
-                best_face = face
-        
-        return best_face
+    def toggle_face_detection(self):
+        """Toggle face detection on/off"""
+        self.face_detection_enabled = self.face_detect_var.get()
+        status = "enabled" if self.face_detection_enabled else "disabled"
+        self.log_message(f"Face detection {status}")
     
-    def display_reference_thumbnail(self, file_path, index, face_rect, shape):
-        """Display annotated reference thumbnail"""
+    def log_message(self, message):
+        """Add message to log area"""
+        self.log_text.insert(tk.END, f"{time.strftime('%H:%M:%S')} - {message}\n")
+        self.log_text.see(tk.END)
+        self.root.update_idletasks()
+    
+    def clear_log(self):
+        """Clear the log area"""
+        self.log_text.delete(1.0, tk.END)
+    
+    def browse_folder(self):
+        """Browse for download folder"""
+        folder = filedialog.askdirectory(initialdir=self.folder_var.get())
+        if folder:
+            self.folder_var.set(folder)
+            self.download_folder = folder
+    
+    def open_download_folder(self):
+        """Open the download folder in file explorer"""
+        if os.path.exists(self.download_folder):
+            if os.name == 'nt':  # Windows
+                os.startfile(self.download_folder)
+            elif os.name == 'posix':  # macOS and Linux
+                os.system(f'open "{self.download_folder}"')
+        else:
+            messagebox.showwarning("Folder Not Found", f"Folder '{self.download_folder}' does not exist.")
+    
+    def start_scraping(self):
+        """Start the scraping process"""
+        person_name = self.name_entry.get().strip()
+        if not person_name:
+            messagebox.showerror("Error", "Please enter a person name.")
+            return
+        
+        self.is_scraping = True
+        self.start_button.config(state=tk.DISABLED)
+        self.stop_button.config(state=tk.NORMAL)
+        self.progress.start()
+        self.status_var.set("Scraping in progress...")
+        
+        # Start scraping in a separate thread
+        self.scraping_thread = threading.Thread(target=self.scrape_images, args=(person_name,))
+        self.scraping_thread.daemon = True
+        self.scraping_thread.start()
+    
+    def stop_scraping(self):
+        """Stop the scraping process"""
+        self.is_scraping = False
+        self.start_button.config(state=tk.NORMAL)
+        self.stop_button.config(state=tk.DISABLED)
+        self.progress.stop()
+        self.status_var.set("Scraping stopped")
+        self.log_message("Scraping stopped by user")
+    
+    def contains_face(self, image_data: bytes) -> bool:
+        """Check if image contains at least one face"""
         try:
-            # Create frame if needed
-            if not hasattr(self, 'ref_thumbnail_frames'):
-                self.ref_thumbnail_frames = []
-                self.ref_thumbnail_canvases = []
-                self.ref_thumbnail_texts = []
+            # Convert bytes to numpy array
+            image = face_recognition.load_image_file(io.BytesIO(image_data))
             
-            # Create new frame
-            frame = ttk.Frame(self.ref_images_container)
-            frame.pack(fill=tk.X, pady=2)
-            self.ref_thumbnail_frames.append(frame)
+            # Find all face locations
+            face_locations = face_recognition.face_locations(image)
             
-            # Create canvas for annotated image
-            canvas = tk.Canvas(frame, width=100, height=100, bg='white')
-            canvas.pack(side=tk.LEFT, padx=5)
-            self.ref_thumbnail_canvases.append(canvas)
+            return len(face_locations) > 0
+        except Exception as e:
+            self.log_message(f"Face detection error: {str(e)}")
+            return False
+    
+    def matches_reference_faces(self, image_data: bytes) -> bool:
+        """Check if image contains a face that matches any reference faces"""
+        if not self.reference_faces:
+            return True  # No reference faces to compare against
             
-            # Load image
-            img = Image.open(file_path)
-            img.thumbnail((100, 100))
+        try:
+            # Load the image
+            unknown_image = face_recognition.load_image_file(io.BytesIO(image_data))
             
-            # Draw face rectangle and landmarks
-            draw = ImageDraw.Draw(img)
+            # Get face encodings for the unknown image
+            unknown_encodings = face_recognition.face_encodings(unknown_image)
             
-            # Scale face rect to thumbnail size
-            scale_x = 100 / img.width
-            scale_y = 100 / img.height
+            if not unknown_encodings:
+                return False  # No faces found in the image
+                
+            # Compare against each reference face
+            for ref_encoding in self.reference_faces:
+                matches = face_recognition.compare_faces([ref_encoding], unknown_encodings[0], tolerance=0.6)
+                if any(matches):
+                    return True
+                    
+            return False
+        except Exception as e:
+            self.log_message(f"Face matching error: {str(e)}")
+            return False
+    
+    def validate_image(self, url: str) -> bool:
+        """Validate if URL is likely to be a real image with a face"""
+        try:
+            # First check if it's an image URL
+            response = self.session.head(url, timeout=5)
+            content_type = response.headers.get('content-type', '').lower()
             
-            # Draw face rectangle
-            draw.rectangle([
-                (face_rect.left() * scale_x, face_rect.top() * scale_y),
-                (face_rect.right() * scale_x, face_rect.bottom() * scale_y)
-            ], outline="red", width=1)
+            if not any(img_type in content_type for img_type in ['image/', 'jpeg', 'jpg', 'png', 'gif', 'webp']):
+                return False
+                
+            # If face detection is disabled, skip further checks
+            if not self.face_detection_enabled:
+                return True
+                
+            # Download the full image for face detection
+            response = self.session.get(url, timeout=10)
+            response.raise_for_status()
             
-            # Draw landmarks
-            landmarks = face_utils.shape_to_np(shape)
-            for (x, y) in landmarks:
-                draw.ellipse([(x*scale_x-1, y*scale_y-1), (x*scale_x+1, y*scale_y+1)], 
-                            fill="blue")
+            image_data = response.content
             
-            # Convert to PhotoImage
-            photo = ImageTk.PhotoImage(img)
-            
-            # Display on canvas
-            canvas.create_image(0, 0, anchor=tk.NW, image=photo)
-            canvas.image = photo  # Keep reference
-            
-            # Add index text
-            text = ttk.Label(frame, text=f"Ref #{index}", font=('Arial', 8))
-            text.pack(side=tk.LEFT)
-            self.ref_thumbnail_texts.append(text)
-            
-            # Add remove button
-            remove_btn = ttk.Button(frame, text="×", width=2, 
-                                   command=lambda i=index-1: self.remove_reference_image(i))
-            remove_btn.pack(side=tk.RIGHT, padx=5)
+            # Check if image contains at least one face
+            if not self.contains_face(image_data):
+                return False
+                
+            # If we have reference faces, check for matches
+            if self.reference_faces and not self.matches_reference_faces(image_data):
+                return False
+                
+            return True
             
         except Exception as e:
-            self.log_message(f"Error displaying thumbnail: {str(e)}")
-    
-    # [Rest of the methods including remove_reference_image, clear_reference_images, 
-    # toggle_face_detection, toggle_face_matching, log_message, clear_log, 
-    # browse_folder, open_download_folder, start_scraping, stop_scraping would be here]
-    
-    def validate_image(self, url):
-        """Ultra-precise image validation with multiple checks"""
-        try:
-            # [Implementation would include all the advanced validation steps]
-            pass
-    
-    def assess_image_quality(self, image):
-        """Assess image quality using multiple metrics"""
-        # [Implementation would include blur detection, noise analysis, etc.]
-        pass
-    
-    def analyze_image_metadata(self, image_data):
-        """Analyze image metadata for authenticity"""
-        # [Implementation would check EXIF data, compression artifacts, etc.]
-        pass
+            self.log_message(f"Validation error for {url}: {str(e)}")
+            return False
     
     def scrape_images(self, person_name):
-        """Main scraping method with enhanced validation"""
-        # [Implementation would include all the scraping logic with new validation]
-        pass
+        """Main scraping method (runs in separate thread)"""
+        try:
+            self.download_folder = self.folder_var.get()
+            os.makedirs(self.download_folder, exist_ok=True)
+            
+            # Collect platform info
+            platforms = {}
+            if self.twitter_entry.get().strip():
+                platforms['twitter'] = self.twitter_entry.get().strip()
+            if self.github_entry.get().strip():
+                platforms['github'] = self.github_entry.get().strip()
+            if self.linkedin_entry.get().strip():
+                platforms['linkedin'] = self.linkedin_entry.get().strip()
+            
+            max_images = int(self.max_images_var.get() or 10)
+            
+            self.log_message(f"Starting scrape for: {person_name}")
+            self.log_message(f"Max images: {max_images}")
+            if self.face_detection_enabled:
+                self.log_message("Face detection is ENABLED")
+                if self.reference_faces:
+                    self.log_message(f"Using {len(self.reference_faces)} reference faces for matching")
+            else:
+                self.log_message("Face detection is DISABLED")
+            
+            all_images = []
+            
+            # Check specific platforms
+            for platform, username in platforms.items():
+                if not self.is_scraping:
+                    break
+                
+                self.log_message(f"Checking {platform}: {username}")
+                
+                if platform == 'twitter':
+                    img = self.scrape_twitter_profile(username)
+                elif platform == 'github':
+                    img = self.scrape_github_profile(username)
+                elif platform == 'linkedin':
+                    img = self.scrape_linkedin_profile(username)
+                
+                if img:
+                    all_images.append(img)
+                    self.log_message(f"Found image from {platform}")
+                
+                time.sleep(1)  # Rate limiting
+            
+            # Search Google Images
+            if self.is_scraping and len(all_images) < max_images:
+                self.log_message("Searching Google Images...")
+                google_images = self.search_google_images(person_name, max_images - len(all_images))
+                all_images.extend(google_images)
+                self.log_message(f"Found {len(google_images)} images from Google")
+            
+            # Search alternative sources if needed
+            if self.is_scraping and len(all_images) < max_images:
+                self.log_message("Searching alternative sources...")
+                alt_images = self.search_alternative_sources(person_name, max_images - len(all_images))
+                all_images.extend(alt_images)
+                self.log_message(f"Found {len(alt_images)} images from alternative sources")
+            
+            # Validate and filter images
+            valid_images = []
+            for img in all_images:
+                if not self.is_scraping:
+                    break
+                
+                if self.validate_image(img['url']):
+                    valid_images.append(img)
+                    self.log_message(f"✓ Valid image from {img['source']}")
+                else:
+                    reason = "no face detected" if self.face_detection_enabled else "invalid/inaccessible"
+                    self.log_message(f"✗ Rejected image from {img['source']} ({reason})")
+            
+            # Download images with threading for better performance
+            downloaded_count = 0
+            with ThreadPoolExecutor(max_workers=5) as executor:
+                futures = []
+                for i, img_info in enumerate(valid_images[:max_images]):
+                    if not self.is_scraping:
+                        break
+                    
+                    futures.append(executor.submit(self.download_and_process_image, img_info, person_name, i+1, len(valid_images)))
+                
+                for future in futures:
+                    result = future.result()
+                    if result:
+                        downloaded_count += 1
+            
+            if self.is_scraping:
+                self.log_message(f"Scraping completed! Downloaded {downed_count} images.")
+                self.status_var.set(f"Completed - {downloaded_count} images downloaded")
+                messagebox.showinfo("Complete", f"Successfully downloaded {downloaded_count} images!")
+            
+        except Exception as e:
+            self.log_message(f"Error during scraping: {str(e)}")
+            messagebox.showerror("Error", f"An error occurred: {str(e)}")
+        
+        finally:
+            self.start_button.config(state=tk.NORMAL)
+            self.stop_button.config(state=tk.DISABLED)
+            self.progress.stop()
+            if self.is_scraping:
+                self.status_var.set("Ready")
     
     def download_and_process_image(self, img_info, person_name, current, total):
-        """Download and process with all validation steps"""
-        # [Implementation would include all processing steps]
-        pass
+        """Download and process a single image with face detection"""
+        try:
+            if not self.is_scraping:
+                return False
+                
+            self.log_message(f"Downloading image {current}/{total} from {img_info['source']}")
+            filepath = self.download_image(img_info, person_name)
+            
+            if filepath:
+                # Verify the downloaded image contains a face if face detection is enabled
+                if self.face_detection_enabled:
+                    try:
+                        image = face_recognition.load_image_file(filepath)
+                        face_locations = face_recognition.face_locations(image)
+                        
+                        if not face_locations:
+                            os.remove(filepath)
+                            self.log_message(f"✗ No face detected in downloaded image: {os.path.basename(filepath)}")
+                            return False
+                            
+                        # If we have reference faces, check for matches
+                        if self.reference_faces:
+                            face_encodings = face_recognition.face_encodings(image, face_locations)
+                            match_found = False
+                            
+                            for face_encoding in face_encodings:
+                                matches = face_recognition.compare_faces(self.reference_faces, face_encoding, tolerance=0.6)
+                                if any(matches):
+                                    match_found = True
+                                    break
+                            
+                            if not match_found:
+                                os.remove(filepath)
+                                self.log_message(f"✗ No matching face in downloaded image: {os.path.basename(filepath)}")
+                                return False
+                    
+                    except Exception as e:
+                        self.log_message(f"Error processing downloaded image: {str(e)}")
+                        return False
+                
+                self.log_message(f"✓ Downloaded: {os.path.basename(filepath)}")
+                return True
+            else:
+                self.log_message(f"✗ Failed to download from {img_info['source']}")
+                return False
+                
+        except Exception as e:
+            self.log_message(f"Error downloading image: {str(e)}")
+            return False
     
-    def update_image_preview(self, filepath):
-        """Update preview with detailed annotations"""
-        # [Implementation would show face boxes, landmarks, quality info]
-        pass
+    # [Rest of your existing methods (search_alternative_sources, validate_image_url, 
+    # search_google_images, scrape_github_profile, scrape_twitter_profile, 
+    # scrape_linkedin_profile, download_image) remain unchanged...]
 
 def main():
     root = tk.Tk()
-    app = UltraPreciseProfileScraper(root)
+    app = ProfileImageScraperGUI(root)
     root.mainloop()
 
 if __name__ == "__main__":
