@@ -11,13 +11,25 @@ from typing import List, Dict, Optional
 import hashlib
 from PIL import Image, ImageTk
 import io
+import torch
+import clip
+import numpy as np
+import cv2
+import face_recognition
+from torchvision.transforms import Compose, Resize, CenterCrop, ToTensor, Normalize
 
 class ProfileImageScraperGUI:
     def __init__(self, root):
         self.root = root
-        self.root.title("Profile Image Scraper")
-        self.root.geometry("800x700")
+        self.root.title("AI Profile Image Scraper Pro")
+        self.root.geometry("950x800")
         self.root.configure(bg='#f0f0f0')
+        
+        # Initialize AI models
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.clip_model, self.clip_preprocess = None, None
+        self.face_detection_model = "cnn"  # Options: "hog" (faster) or "cnn" (more accurate)
+        self.load_ai_models()
         
         # Initialize scraper session
         self.session = requests.Session()
@@ -30,27 +42,53 @@ class ProfileImageScraperGUI:
         
         self.create_widgets()
     
+    def load_ai_models(self):
+        """Load CLIP and face recognition models"""
+        try:
+            # Load CLIP for human verification
+            self.log_message("Loading CLIP model...")
+            self.clip_model, self.clip_preprocess = clip.load("ViT-B/32", device=self.device)
+            
+            # Verify face recognition works
+            test_image = np.zeros((100, 100, 3), dtype=np.uint8)
+            face_recognition.face_locations(test_image)
+            
+            self.log_message("AI models loaded successfully")
+        except Exception as e:
+            messagebox.showerror("AI Error", f"Failed to load AI models: {str(e)}")
+            self.clip_model = None
+    
     def create_widgets(self):
         # Title
-        title_label = tk.Label(self.root, text="Profile Image Scraper", 
-                              font=('Arial', 20, 'bold'), bg='#f0f0f0', fg='#333')
-        title_label.pack(pady=10)
+        title_frame = ttk.Frame(self.root)
+        title_frame.pack(pady=10)
+        
+        title_label = tk.Label(title_frame, text="AI Profile Image Scraper Pro", 
+                             font=('Arial', 22, 'bold'), bg='#f0f0f0', fg='#333')
+        title_label.pack()
+        
+        subtitle_label = tk.Label(title_frame, text="Face Recognition + Web Crawler", 
+                                font=('Arial', 12), bg='#f0f0f0', fg='#555')
+        subtitle_label.pack()
         
         # Main frame
         main_frame = ttk.Frame(self.root, padding="20")
         main_frame.pack(fill=tk.BOTH, expand=True)
         
-        # Person name input
-        name_frame = ttk.Frame(main_frame)
-        name_frame.pack(fill=tk.X, pady=(0, 15))
+        # Search frame
+        search_frame = ttk.LabelFrame(main_frame, text="Search Parameters", padding="10")
+        search_frame.pack(fill=tk.X, pady=(0, 15))
         
-        ttk.Label(name_frame, text="Person Name:", font=('Arial', 12, 'bold')).pack(anchor=tk.W)
+        # Person name input
+        name_frame = ttk.Frame(search_frame)
+        name_frame.pack(fill=tk.X, pady=(0, 10))
+        ttk.Label(name_frame, text="Person Name:", font=('Arial', 11, 'bold'), width=15).pack(side=tk.LEFT)
         self.name_entry = ttk.Entry(name_frame, font=('Arial', 11), width=50)
-        self.name_entry.pack(fill=tk.X, pady=(5, 0))
+        self.name_entry.pack(fill=tk.X, padx=(5, 0))
         
         # Platforms frame
-        platforms_frame = ttk.LabelFrame(main_frame, text="Platform Usernames (Optional)", padding="10")
-        platforms_frame.pack(fill=tk.X, pady=(0, 15))
+        platforms_frame = ttk.Frame(search_frame)
+        platforms_frame.pack(fill=tk.X, pady=(0, 10))
         
         # Twitter
         twitter_frame = ttk.Frame(platforms_frame)
@@ -74,9 +112,10 @@ class ProfileImageScraperGUI:
         self.linkedin_entry.pack(side=tk.LEFT, padx=(5, 0))
         
         # Settings frame
-        settings_frame = ttk.LabelFrame(main_frame, text="Settings", padding="10")
+        settings_frame = ttk.LabelFrame(main_frame, text="Advanced Settings", padding="10")
         settings_frame.pack(fill=tk.X, pady=(0, 15))
         
+        # Folder settings
         folder_frame = ttk.Frame(settings_frame)
         folder_frame.pack(fill=tk.X, pady=2)
         ttk.Label(folder_frame, text="Download Folder:", width=15).pack(side=tk.LEFT)
@@ -85,23 +124,47 @@ class ProfileImageScraperGUI:
         self.folder_entry.pack(side=tk.LEFT, padx=(5, 5))
         ttk.Button(folder_frame, text="Browse", command=self.browse_folder).pack(side=tk.LEFT)
         
-        # Max images setting
-        max_frame = ttk.Frame(settings_frame)
-        max_frame.pack(fill=tk.X, pady=2)
-        ttk.Label(max_frame, text="Max Images:", width=15).pack(side=tk.LEFT)
-        self.max_images_var = tk.StringVar(value="10")
-        ttk.Entry(max_frame, textvariable=self.max_images_var, width=10).pack(side=tk.LEFT, padx=(5, 0))
+        # Performance settings
+        perf_frame = ttk.Frame(settings_frame)
+        perf_frame.pack(fill=tk.X, pady=2)
         
-        # Buttons frame
+        # Max images
+        ttk.Label(perf_frame, text="Max Images:", width=15).pack(side=tk.LEFT)
+        self.max_images_var = tk.StringVar(value="10")
+        ttk.Entry(perf_frame, textvariable=self.max_images_var, width=10).pack(side=tk.LEFT, padx=(5, 0))
+        
+        # Face detection model
+        ttk.Label(perf_frame, text="Face Model:", width=15).pack(side=tk.LEFT, padx=(20, 0))
+        self.face_model_var = tk.StringVar(value="cnn")
+        ttk.Combobox(perf_frame, textvariable=self.face_model_var, 
+                    values=["cnn (accurate)", "hog (fast)"], width=15).pack(side=tk.LEFT)
+        
+        # AI settings
+        ai_frame = ttk.Frame(settings_frame)
+        ai_frame.pack(fill=tk.X, pady=2)
+        
+        # CLIP threshold
+        ttk.Label(ai_frame, text="CLIP Confidence:", width=15).pack(side=tk.LEFT)
+        self.clip_threshold_var = tk.StringVar(value="0.7")
+        ttk.Entry(ai_frame, textvariable=self.clip_threshold_var, width=10).pack(side=tk.LEFT, padx=(5, 0))
+        ttk.Label(ai_frame, text="(0.5-1.0)").pack(side=tk.LEFT, padx=(5, 0))
+        
+        # Face confidence
+        ttk.Label(ai_frame, text="Face Confidence:", width=15).pack(side=tk.LEFT, padx=(20, 0))
+        self.face_threshold_var = tk.StringVar(value="0.8")
+        ttk.Entry(ai_frame, textvariable=self.face_threshold_var, width=10).pack(side=tk.LEFT, padx=(5, 0))
+        ttk.Label(ai_frame, text="(0.5-1.0)").pack(side=tk.LEFT, padx=(5, 0))
+        
+        # Control buttons
         buttons_frame = ttk.Frame(main_frame)
         buttons_frame.pack(fill=tk.X, pady=(0, 15))
         
         self.start_button = ttk.Button(buttons_frame, text="Start Scraping", 
-                                      command=self.start_scraping, style='Accent.TButton')
+                                     command=self.start_scraping, style='Accent.TButton')
         self.start_button.pack(side=tk.LEFT, padx=(0, 10))
         
         self.stop_button = ttk.Button(buttons_frame, text="Stop", 
-                                     command=self.stop_scraping, state=tk.DISABLED)
+                                    command=self.stop_scraping, state=tk.DISABLED)
         self.stop_button.pack(side=tk.LEFT, padx=(0, 10))
         
         ttk.Button(buttons_frame, text="Clear Log", command=self.clear_log).pack(side=tk.LEFT, padx=(0, 10))
@@ -112,7 +175,7 @@ class ProfileImageScraperGUI:
         self.progress.pack(fill=tk.X, pady=(0, 10))
         
         # Log area
-        log_frame = ttk.LabelFrame(main_frame, text="Log", padding="5")
+        log_frame = ttk.LabelFrame(main_frame, text="Activity Log", padding="5")
         log_frame.pack(fill=tk.BOTH, expand=True)
         
         self.log_text = scrolledtext.ScrolledText(log_frame, height=15, font=('Consolas', 9))
@@ -120,7 +183,8 @@ class ProfileImageScraperGUI:
         
         # Status bar
         self.status_var = tk.StringVar(value="Ready")
-        status_bar = ttk.Label(self.root, textvariable=self.status_var, relief=tk.SUNKEN, anchor=tk.W)
+        status_bar = ttk.Label(self.root, textvariable=self.status_var, 
+                             relief=tk.SUNKEN, anchor=tk.W, font=('Arial', 9))
         status_bar.pack(side=tk.BOTTOM, fill=tk.X)
     
     def log_message(self, message):
@@ -152,6 +216,10 @@ class ProfileImageScraperGUI:
     
     def start_scraping(self):
         """Start the scraping process"""
+        if not self.clip_model:
+            messagebox.showerror("Error", "AI models failed to load. Cannot proceed.")
+            return
+        
         person_name = self.name_entry.get().strip()
         if not person_name:
             messagebox.showerror("Error", "Please enter a person name.")
@@ -162,6 +230,9 @@ class ProfileImageScraperGUI:
         self.stop_button.config(state=tk.NORMAL)
         self.progress.start()
         self.status_var.set("Scraping in progress...")
+        
+        # Set face detection model
+        self.face_detection_model = "cnn" if "cnn" in self.face_model_var.get() else "hog"
         
         # Start scraping in a separate thread
         self.scraping_thread = threading.Thread(target=self.scrape_images, args=(person_name,))
@@ -176,6 +247,53 @@ class ProfileImageScraperGUI:
         self.progress.stop()
         self.status_var.set("Scraping stopped")
         self.log_message("Scraping stopped by user")
+    
+    def contains_human_face(self, image_url: str) -> bool:
+        """Check if image contains a human face using face_recognition and CLIP"""
+        try:
+            # Download the image
+            response = self.session.get(image_url, stream=True, timeout=15)
+            if response.status_code != 200:
+                return False
+            
+            # Load image
+            img = Image.open(io.BytesIO(response.content))
+            
+            # Convert to numpy array for face detection
+            img_array = np.array(img)
+            
+            # First check with face_recognition
+            face_locations = face_recognition.face_locations(
+                img_array, 
+                model=self.face_detection_model,
+                number_of_times_to_upsample=1
+            )
+            
+            if not face_locations:
+                self.log_message("No faces detected in image")
+                return False
+                
+            # If we found faces, verify with CLIP for additional confidence
+            img_input = self.clip_preprocess(img).unsqueeze(0).to(self.device)
+            text_inputs = clip.tokenize([
+                "a photo of a person", "a human face", "a portrait",
+                "a logo", "an object", "a drawing", "text"
+            ]).to(self.device)
+            
+            with torch.no_grad():
+                logits_per_image, _ = self.clip_model(img_input, text_inputs)
+                probs = logits_per_image.softmax(dim=-1).cpu().numpy()
+            
+            human_prob = sum(probs[0][:3])  # Sum probabilities for human-related prompts
+            threshold = float(self.clip_threshold_var.get())
+            
+            self.log_message(f"Face detection: {len(face_locations)} faces | CLIP human confidence: {human_prob:.2f}")
+            
+            return human_prob >= threshold
+            
+        except Exception as e:
+            self.log_message(f"Face detection error: {str(e)}")
+            return False
     
     def scrape_images(self, person_name):
         """Main scraping method (runs in separate thread)"""
@@ -196,10 +314,11 @@ class ProfileImageScraperGUI:
             
             self.log_message(f"Starting scrape for: {person_name}")
             self.log_message(f"Max images: {max_images}")
+            self.log_message(f"Face detection model: {self.face_detection_model}")
             
             all_images = []
             
-            # Check specific platforms
+            # Check specific platforms first
             for platform, username in platforms.items():
                 if not self.is_scraping:
                     break
@@ -219,32 +338,38 @@ class ProfileImageScraperGUI:
                 
                 time.sleep(1)  # Rate limiting
             
-            # Search Google Images
+            # Search Google Images if we need more
             if self.is_scraping and len(all_images) < max_images:
                 self.log_message("Searching Google Images...")
                 google_images = self.search_google_images(person_name, max_images - len(all_images))
                 all_images.extend(google_images)
                 self.log_message(f"Found {len(google_images)} images from Google")
             
-            # Search alternative sources if needed
+            # Search alternative sources if still needed
             if self.is_scraping and len(all_images) < max_images:
                 self.log_message("Searching alternative sources...")
                 alt_images = self.search_alternative_sources(person_name, max_images - len(all_images))
                 all_images.extend(alt_images)
                 self.log_message(f"Found {len(alt_images)} images from alternative sources")
             
-            # Validate and filter images
+            # Validate and filter images with face detection
             valid_images = []
             for img in all_images:
                 if not self.is_scraping:
                     break
-                if self.validate_image_url(img['url']):
-                    valid_images.append(img)
-                    self.log_message(f"✓ Valid image from {img['source']}")
-                else:
+                
+                if not self.validate_image_url(img['url']):
                     self.log_message(f"✗ Invalid/inaccessible image from {img['source']}")
+                    continue
+                
+                # Check if image contains a human face
+                if self.contains_human_face(img['url']):
+                    valid_images.append(img)
+                    self.log_message(f"✓ Valid human image from {img['source']}")
+                else:
+                    self.log_message(f"✗ Non-human image filtered from {img['source']}")
             
-            # Download images
+            # Download the valid images
             downloaded_count = 0
             for i, img_info in enumerate(valid_images[:max_images]):
                 if not self.is_scraping:
@@ -260,9 +385,9 @@ class ProfileImageScraperGUI:
                         self.log_message(f"✗ Failed to download from {img_info['source']}")
             
             if self.is_scraping:
-                self.log_message(f"Scraping completed! Downloaded {downloaded_count} images.")
-                self.status_var.set(f"Completed - {downloaded_count} images downloaded")
-                messagebox.showinfo("Complete", f"Successfully downloaded {downloaded_count} images!")
+                self.log_message(f"Scraping completed! Downloaded {downloaded_count} human images.")
+                self.status_var.set(f"Completed - {downloaded_count} human images downloaded")
+                messagebox.showinfo("Complete", f"Successfully downloaded {downloaded_count} human images!")
             
         except Exception as e:
             self.log_message(f"Error during scraping: {str(e)}")
@@ -280,7 +405,7 @@ class ProfileImageScraperGUI:
         images = []
         
         try:
-            # Method 1: DuckDuckGo Images (more lenient than Google)
+            # Method 1: DuckDuckGo Images
             self.log_message("Trying DuckDuckGo Images...")
             ddg_url = f"https://duckduckgo.com/?q={person_name.replace(' ', '+')}+profile&iax=images&ia=images"
             
@@ -296,7 +421,6 @@ class ProfileImageScraperGUI:
                 scripts = soup.find_all('script')
                 for script in scripts:
                     if script.string and 'vqd' in str(script.string):
-                        # DuckDuckGo uses vqd tokens, try to extract image URLs
                         import re
                         urls = re.findall(r'https://[^"\']*\.(?:jpg|jpeg|png|gif)', str(script.string))
                         for url in urls[:max_results]:
@@ -320,17 +444,14 @@ class ProfileImageScraperGUI:
                 if response.status_code == 200:
                     soup = BeautifulSoup(response.content, 'html.parser')
                     
-                    # Bing uses different structure
                     img_containers = soup.find_all('a', class_='iusc')
                     for container in img_containers[:max_results]:
                         if len(images) >= max_results:
                             break
                         
-                        # Bing stores image data in 'm' attribute as JSON
                         m_data = container.get('m')
                         if m_data:
                             try:
-                                import json
                                 img_data = json.loads(m_data)
                                 img_url = img_data.get('murl')
                                 if img_url and img_url not in [img['url'] for img in images]:
@@ -353,17 +474,14 @@ class ProfileImageScraperGUI:
     def validate_image_url(self, url: str) -> bool:
         """Validate if URL is likely to be a real image"""
         try:
-            # Quick HEAD request to check if URL exists and is an image
             response = self.session.head(url, timeout=5)
             content_type = response.headers.get('content-type', '').lower()
             
-            # Check if it's an image
             if any(img_type in content_type for img_type in ['image/', 'jpeg', 'jpg', 'png', 'gif', 'webp']):
-                # Check content length (avoid tiny images)
                 content_length = response.headers.get('content-length')
-                if content_length and int(content_length) > 1000:  # At least 1KB
+                if content_length and int(content_length) > 1000:
                     return True
-                elif not content_length:  # Some servers don't send content-length
+                elif not content_length:
                     return True
             
         except:
@@ -372,10 +490,9 @@ class ProfileImageScraperGUI:
         return False
     
     def search_google_images(self, person_name: str, max_results: int = 5) -> List[Dict]:
-        """Search Google Images for profile pictures using multiple methods"""
+        """Search Google Images for profile pictures"""
         images = []
         try:
-            # Method 1: Try different search variations
             search_queries = [
                 f"{person_name.replace(' ', '+')}+profile+picture",
                 f"{person_name.replace(' ', '+')}+headshot",
@@ -383,13 +500,12 @@ class ProfileImageScraperGUI:
                 f'"{person_name}"+image'
             ]
             
-            for query in search_queries[:2]:  # Limit to avoid too many requests
+            for query in search_queries[:2]:
                 if not self.is_scraping or len(images) >= max_results:
                     break
                     
                 search_url = f"https://www.google.com/search?q={query}&tbm=isch&safe=off"
                 
-                # Try with different headers
                 headers = {
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
@@ -406,15 +522,13 @@ class ProfileImageScraperGUI:
                 if response.status_code == 200:
                     soup = BeautifulSoup(response.content, 'html.parser')
                     
-                    # Method 1: Look for JSON data in script tags (Google's new format)
+                    # Method 1: Look for JSON data in script tags
                     script_tags = soup.find_all('script')
                     for script in script_tags:
                         if script.string and 'data:image' not in str(script.string):
                             script_content = str(script.string)
-                            # Look for image URLs in the JavaScript
                             if 'https://' in script_content and ('jpg' in script_content or 'png' in script_content or 'jpeg' in script_content):
                                 import re
-                                # Find URLs that look like images
                                 url_pattern = r'https://[^"\s]+\.(?:jpg|jpeg|png|gif|webp)'
                                 found_urls = re.findall(url_pattern, script_content, re.IGNORECASE)
                                 
@@ -429,7 +543,7 @@ class ProfileImageScraperGUI:
                                             'method': 'script_extraction'
                                         })
                     
-                    # Method 2: Traditional img tag search (fallback)
+                    # Method 2: Traditional img tag search
                     img_tags = soup.find_all('img')
                     for img in img_tags:
                         if len(images) >= max_results:
@@ -437,7 +551,6 @@ class ProfileImageScraperGUI:
                         
                         src = img.get('src') or img.get('data-src') or img.get('data-iurl')
                         if src and src.startswith('http') and not src.startswith('data:'):
-                            # Filter out small/logo images
                             if not any(skip in src.lower() for skip in ['logo', 'icon', 'button', 'banner']):
                                 images.append({
                                     'url': src,
@@ -446,7 +559,7 @@ class ProfileImageScraperGUI:
                                     'method': 'img_tag'
                                 })
                 
-                time.sleep(2)  # Respectful delay between requests
+                time.sleep(2)
                 
         except Exception as e:
             self.log_message(f"Error searching Google Images: {e}")
@@ -481,9 +594,8 @@ class ProfileImageScraperGUI:
         return None
     
     def scrape_twitter_profile(self, username: str) -> Optional[Dict]:
-        """Attempt to get Twitter profile image using multiple methods"""
+        """Attempt to get Twitter profile image"""
         try:
-            # Method 1: Try Twitter web page
             url = f"https://twitter.com/{username}"
             headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
@@ -499,7 +611,6 @@ class ProfileImageScraperGUI:
                 og_image = soup.find('meta', property='og:image')
                 if og_image and og_image.get('content'):
                     img_url = og_image.get('content')
-                    # Make sure it's a high-quality image, not the default
                     if 'default_profile' not in img_url and 'twimg.com' in img_url:
                         return {
                             'url': img_url,
@@ -509,7 +620,6 @@ class ProfileImageScraperGUI:
                         }
                 
                 # Method 2: Look for profile image in the page content
-                # Twitter sometimes uses different selectors
                 img_selectors = [
                     'img[src*="profile_images"]',
                     'img[data-testid="ProfileAvatar-image"]',
@@ -521,7 +631,6 @@ class ProfileImageScraperGUI:
                     if profile_img and profile_img.get('src'):
                         img_url = profile_img.get('src')
                         if 'profile_images' in img_url:
-                            # Convert to higher quality version
                             img_url = img_url.replace('_normal', '_400x400')
                             return {
                                 'url': img_url,
@@ -530,7 +639,7 @@ class ProfileImageScraperGUI:
                                 'method': 'profile_img_tag'
                             }
             
-            # Method 2: Try alternative Twitter URL formats
+            # Method 3: Try alternative Twitter URL formats
             alt_url = f"https://x.com/{username}"
             response = self.session.get(alt_url, headers=headers, timeout=10)
             if response.status_code == 200:
